@@ -1,0 +1,626 @@
+---
+title: "Machine Learning in R"
+author: "Nutsa Abazadze"
+date: "2020 June"
+output:
+  html_document:
+    code_folding: show
+    highlight: tango
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+subtitle: TIDA Tbilisi International Data Analytics
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      collapse = TRUE,
+                      comment = "#>",
+                      message = FALSE,
+                      options(scipen = 999),
+                      options(digits=2)
+)
+```
+
+>This code and dataset is taken from Jared Landers workshop and his website https://www.jaredlander.com/
+
+> Three main topics covered: Linear regression, Penalized regression, Classification
+
+> Note, this file was made in R markdown, you can check out the .rmd file to see how this was built.
+
+
+# Before we start - Project Set-up
+
+>Using Projects with RStudio will simplify your workflow. Essentially, all your project related files are collected in your selected folder so you don’t need to specify a working directory. 
+
+>How to set one up: File -> New Project then choose a directory where you want to have your R scripts, data and history files.
+
+> Let’s set up a new project for this workshop!
+To get started:
+Create a new project for the course;
+Create a sub-folder for data - call it data;
+Start a new R script by Ctrl + Shift + N;
+Don’t forget to save the script to your project folder (Ctrl + s)!
+You can comment your code with # (hash-tag). Anything in the given line after # will not be taken into R when it runs the code.
+
+
+# Loading Packages
+
+>Start a new R script by Ctrl + Shift + N
+
+Install packages that we will need
+
+```{r eval=FALSE}
+packages <- c("glmnet", "coefplot", "animation", "sigr", "xgboost", 
+              "magrittr", "DiagrammeR", "useful", "devtools")
+install.packages(packages)
+```
+
+```{r}
+devtools::install_github(c("ramnathv/htmlwidgets", "rstudio/dygraphs"))
+```
+
+Load installed packages
+
+```{r message=FALSE}
+
+library(glmnet)
+library(coefplot)
+library(animation)
+library(sigr)
+library(xgboost)
+library(magrittr) 
+library(DiagrammeR)
+library(useful)
+library(dygraphs)
+
+```
+
+
+# About the dataset that we are going to use - New York City Land Value
+
+>The dataset is about the land value in New York City. Today we are going to inspect the data that is just for Manhattan.  
+
+>In the regression part our goal will be to explain the total value of the peace of land based on all 
+these other input variables. 
+
+>For classification task we will predict the binary variable Historic district.
+ 
+>Training, test and validation sets are already created and we will load them in R. You can download those three datasets using following code. This datasets will be saved in your projects data file
+
+> If the code will not work for you, you can download the datasets from this github page https://github.com/nutsaabazadze/Tidaworkshop
+
+```{r}
+root <- rprojroot::find_rstudio_root_file()
+dataDir <- file.path(root, 'data')
+
+# manhattan_Test.rds
+download.file(
+	'https://query.data.world/s/tkfdrcapfsw7ihodbjzsdywz7povce',
+	destfile=file.path(dataDir, 'manhattan_Test.rds'),
+	mode='wb')
+
+# manhattan_Train.rds
+download.file(
+	'https://query.data.world/s/4tjm263dwjq5knfs5upekzlmzc6oa2',
+	destfile=file.path(dataDir, 'manhattan_Train.rds'),
+	mode='wb')
+
+# manhattan_Validate.rds
+download.file(
+	'https://query.data.world/s/4tfwbez3ul5ap7apg2ffgltfpzmifm',
+	destfile=file.path(dataDir, 'manhattan_Validate.rds'),
+	mode='wb')
+```
+
+read training data in r 
+
+```{r}
+land_train <- readRDS('data/manhattan_Train.rds')
+```
+
+# Regression - predicting total value of the land
+
+In order to define the relationship between input and output variables We will use Formula in R. 
+We are defining the relationship between total value and other predictor variables below (about 30 of them) . Some of the predictors are factors but they will be handeled during next steps.
+
+For our regression analysis we will use simple linear regression and penalized regression. For penalized regression we are going to use the package 'glmnet'. In our formula we are not including an intercept term (-1 in the end of the formula) since glmnet gives as an intercept column automatically.
+
+```{r}
+valueFormula <- TotalValue ~ FireService + 
+    ZoneDist1 + ZoneDist2 + Class + LandUse + 
+    OwnerType + LotArea + BldgArea + ComArea + 
+    ResArea + OfficeArea + RetailArea + 
+    GarageArea + FactryArea + NumBldgs + 
+    NumFloors + UnitsRes + UnitsTotal + 
+    LotFront + LotDepth + BldgFront + 
+    BldgDepth + LotType + Landmark + BuiltFAR +
+    Built + HistoricDistrict - 1
+```
+
+## Simple linear regression and the problem of overfitting
+
+We will use this formula for building a simple linear regression model using lm function. 
+
+```{r}
+value1 <- lm(valueFormula, data=land_train)
+broom::glance(value1) 
+```
+
+Let us visualize results
+
+```{r}
+coefplot(value1, sort='magnitude')
+```
+
+On this plot coefficients of explaining variables are represented by the dots. The wings represent confidence intervals. If the confidence interval on the plot includes zero that means the effect of that variable
+on the outcome variable is statistically not significant.  
+
+In the formula we used just 27 variables however some of them were categorical and they were one hot encoded using lm function, because of that number of explaining variables became very large and it is difficult to see on the plot which variable is significant and which is not. However there is one thing that we can clearly see from this plot : We have very large coefficients and confidence intervals. 
+
+Very large coefficients and very large confidence intervals are indicative of overfitting. 
+
+We have overfitted model because we tried to explain 32K rows of data with large amount of variables and that is the curse of dimensionality.
+
+## Penalized regression using ridge regression, lasso regression and elastic net
+
+Now, as the next step, our goal is to deal with overfitting. For that we are going to use regularization also known as penalization (shrinkage).
+
+Our goal is to find the model where our coefficients are shrunk towards zero. We will use the package 'glmnet' for that purpose.
+
+In order to use glmnet we need to convert our data into an X (predictor) matrix and a Y (response) vector. Since we don’t have to worry about multicolinearity with glmnet we do not want to drop the baselines of factors. We also take advantage of sparse matrices (Matrices that contain mostly zero values are called sparse) since that reduces memory usage.
+
+when we build this x matrix, numeric data is just put in this matrix as a number. categorical data gets automatically turned into dummy variables/one hot encoding
+
+
+```{r}
+landX_train <- build.x(valueFormula, data=land_train,
+                       # do not drop the baselines of factors 
+                       contrasts=FALSE,
+                       # use a sparse matrix (matrix with mostly zero values)
+                       sparse=TRUE)
+sparcematrix <- head(as.matrix(landX_train), 10)[, 4:9]
+landY_train <- build.y(valueFormula, data=land_train)
+sparcematrix
+```
+
+
+### Lasso regression
+
+Using this matrices and the package 'glmnet' we are doing gaussian regression because it is a standard linear regression. In a very little time this function fits 100 models with 100 different lambdas.
+
+The glmnet() function has an alpha argument that determines what type of model is fit. If alpha=0 then a ridge regression model is fit, and if alpha=1 then a lasso model is fit. We first fit a lasso regression model.
+
+By default the glmnet() function performs regression for an automatically selected range of λ values.
+
+by default, the glmnet() function standardizes the variables so that they are on the same scale. To turn off this default setting, use the argument standardize=FALSE.
+
+```{r}
+value2 <- glmnet(x=landX_train, y=landY_train,  alpha = 1, family='gaussian')
+```
+
+Now let us visualize this model 
+
+```{r}
+plot(value2, xvar='lambda', label=TRUE)
+```
+
+> On the x axis we have represented lambda on the log scale. Each 100 value of lambda represents a model with different values of coefficients. 
+>Each line on the plot represents a different coefficient over its lifetime.  
+>If lambda is small, all the coefficients are in the model, as lambda gets bigger the coefficients shrink, they become
+smaller and some of them go to zero. When the value is zero, it means that this variable was not selected for the model.
+>The top axis shows you, for a given value of lambda how many coefficients were selected.
+
+>The problem is, it is hard to interpret the lines and the labels are not informative. Fortunately, coefplot has a new function in Version 1.2.5 called coefpath for making this into an interactive plot using dygraphs. With coefpath you get an interactive version of the plot with the proper labels.
+
+```{R}
+coefpath(value2)
+```
+
+>The question here to ask is which is the optimal lambda? We will answer that question using cross validation.
+
+>We will use cross validation to choose the best lambda. Note that we set a random seed first so our results will be reproducible, since the choice of the cross-validation folds is random.
+
+```{r}
+set.seed(123)
+value3 <- cv.glmnet(x=landX_train, y=landY_train,
+                    family='gaussian',
+                    nfolds=5)
+```
+
+Let us visualize the cross validated model.
+```{r}
+plot(value3)
+```
+
+>On the x axis of the plot is a log of lambda.
+>on the y axis is the error (cross validated mean squared error).
+>Top axis shows how many values were selected for the given values of lambda. 
+>Wings represent the confidence intervals. 
+>The first dotted line represents the value of lambda that results in the absolute least error.
+>The second dotted line represents the value of lambda whose resulting error is the largest you can get while still being within one confidence interval of the best error. 
+>This model which has worse error but roughly the same error only has 12
+variables in it. And the simpler model is always better for interpretability.
+
+
+```{r}
+coefpath(value3)
+```
+
+
+```{r}
+coefplot(value3, sort='magnitude', lambda='lambda.1se')
+```
+
+
+### Ridge Regression
+
+>We have been doing lasso so far and if you want to do ridge there is one little difference in code, you should set the argument alpha to 0. Lasso is very good for variable selection, ridge is very good for dealing with highly correlated variables and shrinking their effect.
+If the goal is to get rid of variables than we shoul use lasso regressio and if we want to deal correlation we should use ridge regression 
+
+```{r}
+value4 <- cv.glmnet(x=landX_train, y=landY_train,
+                    family='gaussian',
+                    alpha=0,
+                    nfolds=5)
+plot(value4)
+```
+
+
+```{r}
+coefpath(value4)
+```
+
+
+>As we visualize the ridge regression we see that the geometry is different. For ridge variables assimptotically go towards zero but never fully get there. All the variables are still in the model. It performed shrinkage, but it did not do variable selection.
+
+
+```{r, collapse=FALSE}
+coefplot(value4, sort='magnitude', lambda='lambda.1se')
+```
+
+
+> To sum up the performance of Lasso and Ridge regressions, they are better alternatives for Ordinary Least Squares (OLS) in terms of predictive accuracy and model intepretability. Still, the relationship between target and predictor variables is still linear. The linear model has distinct advantages in terms of inference and, on real-world problems, is often surprisingly competitive in relation to non-linear methods.
+
+
+
+### Elastic Net
+
+> Finally, shall we always decide if we want to use lasso or ridge? The answer is no. We can combine both of them and use elastic net. For example we can use 60% lasso and 40% ridge as given in the code below.
+
+```{r}
+value5 <- cv.glmnet(x=landX_train, y=landY_train,
+                    family='gaussian',
+                    alpha=0.6,
+                    nfolds=5)
+```
+
+```{r}
+plot(value5)
+```
+
+
+```{r }
+coefpath(value5)
+```
+
+
+```{r, collapse=FALSE}
+coefplot(value5, sort='magnitude', lambda='lambda.1se')
+```
+
+
+### Predicting on test data and comparing the results of Lasso, Ridge and Elastic Net Regressions. 
+
+
+```{r}
+land_test <- readRDS('data/manhattan_Test.rds')
+landX_test <- build.x(valueFormula, data=land_test,
+                      contrasts=FALSE, sparse=TRUE)
+
+landy_test <- build.y(valueFormula, data=land_test)
+```
+
+```{r}
+valuePredictions_Lasso <- predict(value3, newx=landX_test, s='lambda.1se')
+valuePredictions_Ridge <- predict(value4, newx=landX_test, s='lambda.1se')
+valuePredictions_ElasticNet <- predict (value5, newx=landX_test, s='lambda.1se')
+```
+
+Let us compare test Mean Squared Error of those three models. As we have seen, lasso regression used 12 variables at the end, Ridge used all 95 and Elastic Net used 15 Variables.
+
+```{r}
+options(scipen=1, digits=4)
+mean(( valuePredictions_Lasso -landy_test)^2) 
+mean(( valuePredictions_Ridge -landy_test)^2) 
+mean(( valuePredictions_ElasticNet -landy_test)^2) 
+```
+
+
+# Classification using xgboost
+
+So far we have looked at the linear function (linear in the coefficients). We will now get into the non linear model, and we are going to focus on trees. 
+
+Open the new r script and read the data once more, to make the code for classification self contained
+
+```{r}
+land_train <- readRDS('data/manhattan_Train.rds')
+land_test <- readRDS('data/manhattan_Test.rds')
+land_val <- readRDS('data/manhattan_Validate.rds')
+```
+
+
+```{r}
+set.seed(1123)
+```
+
+In this part of the workshop we are doing classification. We will predict if the land is historic district or not (Binary variable). Let us first inspect this variable:
+
+```{r}
+table(land_train$HistoricDistrict)
+```
+
+This variable is imbalanced. Meaning that we have much more no's than yes's. In real analysis it should be downsampled but today we are going to leave it in that way.
+
+We are going to build decision Trees using xgboost. Trees do not need intercepts, hence we do -1 in the formula. For xgboost we have to make categoricals as dummy variables.
+
+```{r}
+histFormula <- HistoricDistrict ~ FireService + 
+    ZoneDist1 + ZoneDist2 + Class + LandUse + 
+    OwnerType + LotArea + BldgArea + ComArea + 
+    ResArea + OfficeArea + RetailArea + 
+    GarageArea + FactryArea + NumBldgs + 
+    NumFloors + UnitsRes + UnitsTotal + 
+    LotFront + LotDepth + BldgFront + 
+    BldgDepth + LotType + Landmark + BuiltFAR +
+    Built + TotalValue - 1
+```
+
+As a first step we need to build x and y matrices.
+
+we set contrast to false because trees do not care for multicoliniarity
+
+```{r}
+landX_train <- build.x(histFormula, data=land_train,
+                       contrasts=FALSE, sparse=TRUE)
+```
+
+To use xgboost package we need to convert the categorical variables into numeric using one hot encoding. For classification, if the dependent variable belongs to class factor, convert it to numeric.
+
+```{r}
+landY_train <- build.y(histFormula, data=land_train)
+head(landY_train, n=15)
+```
+
+While building Y matrix we want to convert our target variable Y into integer (numeric)type - (0/1). 
+
+```{r}
+landY_train <-build.y(histFormula, data=land_train) %>% 
+    as.integer()
+head(landY_train, n=15)
+```
+We shall do -1, because when we convert Yes and No to integer we get 1 and 2, but for xgboost we need o's and 1's.
+
+```{r}
+landY_train <- landY_train - 1
+head(landY_train, n=15)
+```
+
+```{r}
+landX_test <- build.x(histFormula, data=land_test,
+                       contrasts=FALSE, sparse=TRUE)
+landY_test <- build.y(histFormula, data=land_test) %>% 
+    as.integer() - 1
+```
+
+There are some algorithms that let you see how you are doing along the way, but there are some that do not do that. Xgboost does not do it hence we use validation data, for testing on the way.
+(glmnet did cross validation, it handled validation part for us).
+
+```{r}
+landX_val <- build.x(histFormula, data=land_val,
+                       contrasts=FALSE, sparse=TRUE)
+landY_val <- build.y(histFormula, data=land_val) %>% 
+    as.integer() - 1
+
+```
+
+Instead of passing x and y directly to xgboost we need to pass special xgboost objects to the function which holds x and y matrices simultaniously. As you seen one of the arguments here is 'label' which makes us think that while building this function it was meant to be used for categorical outcomes and not Continuous ones. We are not going to need this object for test data because we will not need the Y data while doing predictions
+
+```{r}
+xgTrain <- xgb.DMatrix(data=landX_train, label=landY_train)
+xgVal <- xgb.DMatrix(data=landX_val, label=landY_val)
+```
+
+Now, we are ready to build our first model. xgboost r package does not have any inbuilt feature for doing grid/random search. to overcome this bottleneck, one can use Caret or MLR to perform the extensive parametric search and try to obtain optimal accuracy. We will not do it today, because it needs more time and we will play with some of the parameters ourselfs.
+
+```{r}
+xg1 <- xgb.train(
+    data=xgTrain,
+    # this is what you want to acomplish logistic regression for 
+    #binary classification. 
+    #Output probability
+    objective='binary:logistic',
+    nrounds=1
+)
+```
+
+By running this model we have built the tree. Let us have a look at this tree
+
+```{r}
+xgb.plot.multi.trees(xg1, feature_names = colnames(landX_train))
+```
+
+Now add an additional argument and compute logloss to see how well we are doing
+
+```{r}
+xg2 <- xgb.train(
+    data=xgTrain,
+    # this is what you want to acomplish
+    objective='binary:logistic',
+    nrounds=1,
+    # compute the logloss and say how well I 
+    #am doing (loss function) how right are u?
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain)
+)
+```
+
+Now let us fit 100 trees instead of 1 tree by changing parameter nrounds from 1 to 100
+
+```{r include=FALSE}
+xg3 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=100,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain)
+)
+```
+
+
+```{r}
+xg3$evaluation_log[100]
+```
+
+Now let us fit 300 trees instead of 100 trees. As we see the loss is very low which means it is overfitting on the training data
+
+```{r include=FALSE}
+xg4 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=300,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain)
+)
+```
+
+```{r}
+xg4$evaluation_log[300]
+```
+
+Now let us have a look at the validation data in the watchlist
+
+```{r include=FALSE}
+xg5 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=300,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain, validate=xgVal)
+)
+```
+
+for each itaration if we add on x tree we get this value of logloss
+
+```{r}
+xg5$evaluation_log[300]
+```
+
+
+Green curve always gets better after each iteration. Purple one does not get better after some point. We should find absolute minimum point of logloss
+
+
+```{r}
+dygraph(xg5$evaluation_log)
+```
+
+For that reason we tell xgboost to stop after it has not improved for a while (for 70 iterations) by specifying new argument "early stopping rounds". By settingthis argument to 70 training with a validation set will stop if the performance doesn't improve for 70 rounds.
+
+
+```{r include=FALSE}
+xg6 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=300,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain, validate=xgVal),
+    early_stopping_rounds=70
+)
+```
+
+
+The performance has not improved after 130th iteration where the
+losslog was 0.335638
+
+```{r}
+xg6$best_iteration 
+```
+
+```{r}
+xg6$best_score 
+```
+
+Let us play with another parameter depth of the tree. what is the proper depth for the tree? Larger the depth, more complex the model; higher chances of overfitting. There is no standard value for max_depth. Larger data sets require deep trees to learn the rules from data. The default value is 6. Let us try 8
+
+```{r include=FALSE}
+xg7 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=1000,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain, validate=xgVal),
+    early_stopping_rounds=70,
+    max_depth=8
+)
+```
+
+Now let us try 3 as the maximum depth of the tree
+
+```{r include=FALSE}
+xg8 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=1000,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain, validate=xgVal),
+    early_stopping_rounds=70,
+    max_depth=3
+)
+```
+
+If we compare the results of trees with different depths and diffetent numbers of iterations we will see that the tree with more depths(8) but few iterations was better.
+
+```{r}
+xg7$best_score
+```
+
+```{r}
+xg8$best_score
+
+```
+
+Can we make a forest of boosted trees? There is a parameter num-parallel_tree and this argument is useful to test random forest with xgboost. We will specify how many trees should be grown per round
+
+```{r}
+xg9 <- xgb.train(
+    data=xgTrain,
+    objective='binary:logistic',
+    nrounds=10,
+    eval_metric='logloss',
+    watchlist=list(train=xgTrain, validate=xgVal),
+    early_stopping_rounds=70,
+    max_depth=3,
+    # for each tree randomly select the rows 
+    subsample=0.5, 
+    # for each tree randomly choose only half of the columns
+    colsample_bytree=0.5,
+    # 50 trees at a time
+    num_parallel_tree=50
+)
+
+```
+
+As we see, on this data just boosted trees are better than pseudo random forest
+
+Variable importance plot
+
+```{r}
+xgb.plot.importance(
+    xgb.importance(xg7, feature_names=colnames(landX_train)))
+```
+
