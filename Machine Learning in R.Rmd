@@ -14,7 +14,7 @@ output:
   pdf_document:
     toc: yes
     toc_depth: '4'
-subtitle: TIDA Tbilisi International Data Analytics
+subtitle: 'TIDA' Tbilisi International Data Analytics
 ---
 
 ```{r setup, include=FALSE}
